@@ -1,0 +1,25 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Syne:wght@600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --teal: #00D1C9;
+  --purple: #5A00FF;
+}
+
+* { box-sizing: border-box; }
+body { font-family: 'DM Sans', sans-serif; background: #FAFAFA; color: #111; margin: 0; }
+
+@layer components {
+  .btn-primary { @apply bg-[#00D1C9] text-white font-semibold px-6 py-3 rounded-full hover:bg-[#00A8A2] transition-all duration-200 shadow-sm; }
+  .btn-secondary { @apply bg-[#5A00FF] text-white font-semibold px-6 py-3 rounded-full hover:bg-[#4400CC] transition-all duration-200; }
+  .btn-outline { @apply border-2 border-[#00D1C9] text-[#00D1C9] font-semibold px-6 py-3 rounded-full hover:bg-[#E0FAFA] transition-all duration-200; }
+  .card { @apply bg-white rounded-2xl shadow-sm border border-gray-100 p-6; }
+  .input { @apply w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#00D1C9] focus:border-transparent transition; }
+  .status-new { @apply bg-blue-50 text-blue-600 text-xs font-semibold px-3 py-1 rounded-full; }
+  .status-processing { @apply bg-yellow-50 text-yellow-600 text-xs font-semibold px-3 py-1 rounded-full; }
+  .status-complete { @apply bg-green-50 text-green-600 text-xs font-semibold px-3 py-1 rounded-full; }
+  .status-reviewed { @apply bg-purple-50 text-purple-600 text-xs font-semibold px-3 py-1 rounded-full; }
+}
