@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 
 from core.database import get_db
-from core.auth import hash_password, verify_password, create_access_token
+from core.auth import hash_password, verify_password, create_access_token, get_current_user
 from models.all_models import User, Business
 
 router = APIRouter()
@@ -101,9 +101,5 @@ def business_login(payload: LoginRequest, db: Session = Depends(get_db)):
 # ── Me endpoint ───────────────────────────────
 
 @router.get("/me")
-def get_me(db: Session = Depends(get_db)):
-    """
-    TODO: Hook up to get_current_user dependency when protecting routes.
-    Example: def get_me(current_user: User = Depends(get_current_user))
-    """
-    return {"detail": "Send Bearer token to identify yourself"}
+def get_me(current_user: User = Depends(get_current_user)):
+    return {"id": current_user.id, "name": current_user.name, "email": current_user.email}
