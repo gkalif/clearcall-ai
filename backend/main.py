@@ -3,13 +3,20 @@ load_dotenv()
 
 """
 ClearCall AI - FastAPI Backend
-Entry point for the application
+Entry point for the application with Rate Limiting Enabled
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
+
+# 1. Import slowapi exception tools
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
+# IMPORT FROM NEW CORE UTILITY FILE (Breaks Circular Dependency Loop)
+from core.limiter import limiter
 
 from core.database import engine, Base
 from routers import auth, messages, business
@@ -26,6 +33,10 @@ app = FastAPI(
     description="Backend for ClearCall AI - accent clarity platform",
     version="1.0.0"
 )
+
+# 2. Attach the shared limiter to the app state and register the exception handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS - allow frontend dev server
 app.add_middleware(

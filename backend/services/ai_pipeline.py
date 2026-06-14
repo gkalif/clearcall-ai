@@ -15,8 +15,12 @@ Set in .env:
 import asyncio
 import os
 import logging
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+
+# Initialize the client (it automatically picks up OPENAI_API_KEY from os.environ)
+client = OpenAI()
 
 # ── Config ────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -54,6 +58,29 @@ async def speech_to_text(audio_file_path: str) -> str:
             "for five peoples. My name is Chen Wei and my number is 613-555-0182."
         )
 
+# Make sure this does NOT say "async def"
+def _openai_clean(raw_text: str) -> str:
+    """Synchronous helper that hits the OpenAI API inside a thread pool."""
+    from openai import OpenAI
+    
+    # Initialize the client inside or ensure it's imported
+    client = OpenAI()
+    
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system", 
+                "content": "You are an AI that cleans up speech transcripts. Fix filler words, stuttering, and grammar, but preserve the speaker's original intent perfectly."
+            },
+            {
+                "role": "user", 
+                "content": f"Please clean up this raw transcript:\n\n{raw_text}"
+            }
+        ],
+        temperature=0.3
+    )
+    return response.choices[0].message.content
 
 def _whisper_local(audio_file_path: str) -> str:
     """
@@ -101,18 +128,40 @@ def _whisper_api(audio_file_path: str) -> str:
 
 async def clean_transcript(raw_text: str) -> str:
     """
-    Use Claude to fix grammar, remove filler words, and improve clarity
-    while preserving the caller's exact meaning and all key details.
+    Dynamically routes transcripts to Claude, OpenAI, or a Mock handler
+    based on the LLM_BACKEND environment variable or available API keys.
     """
-    if not ANTHROPIC_API_KEY:
-        logger.warning("[Claude] No ANTHROPIC_API_KEY set — using mock clean")
-        await asyncio.sleep(0.3)
-        return raw_text  # Return raw if no key — still better than crashing
+    import os
+    
+    # 1. Check the explicitly defined backend configuration first
+    backend = os.getenv("LLM_BACKEND", "").lower().strip()
 
-    return await asyncio.get_event_loop().run_in_executor(
-        None, _claude_clean, raw_text
-    )
+    if not backend:
+        backend = "openai" if os.getenv("OPENAI_API_KEY") else "mock"
 
+ 
+    # 3. Route to the requested backend engine
+    if backend == "openai":
+        logger.info("[Pipeline] Routing text cleaning to OpenAI (gpt-4o-mini)")
+        return await asyncio.get_event_loop().run_in_executor(
+            None, _openai_clean, raw_text
+        )
+
+    elif backend == "anthropic":
+        logger.info("[Pipeline] Routing text cleaning to Anthropic (Claude)")
+        # Make sure your original _claude_clean helper is still in this file!
+        return await asyncio.get_event_loop().run_in_executor(
+            None, _claude_clean, raw_text
+        )
+
+    elif backend == "mock":
+        logger.info("[Pipeline] LLM Backend is set to 'mock' — skipping API calls")
+        await asyncio.sleep(0.2)
+        return f"[MOCK CLEANED]: {raw_text}"
+
+    else:
+        logger.warning(f"[Pipeline] Unknown backend '{backend}' — falling back to raw text")
+        return raw_text
 
 def _claude_clean(raw_text: str) -> str:
     import anthropic
@@ -152,18 +201,55 @@ Rules:
 
 async def summarize_text(cleaned_text: str) -> str:
     """
-    Use Claude to generate a concise summary for the business dashboard.
-    Business owners need to scan many messages quickly.
+    Dynamically routes summaries to Claude, OpenAI, or a Mock handler
+    based on the LLM_BACKEND environment variable or available API keys.
     """
-    if not ANTHROPIC_API_KEY:
-        logger.warning("[Claude] No ANTHROPIC_API_KEY set — using mock summary")
+    import os
+    backend = os.getenv("LLM_BACKEND", "").lower().strip()
+
+    if not backend:
+        backend = "openai" if os.getenv("OPENAI_API_KEY") else "mock"
+
+    if backend == "openai":
+        logger.info("[Pipeline] Routing summarization to OpenAI (gpt-4o-mini)")
+        return await asyncio.get_event_loop().run_in_executor(
+            None, _openai_summarize, cleaned_text
+        )
+
+    elif backend == "anthropic":
+        logger.info("[Pipeline] Routing summarization to Anthropic (Claude)")
+        return await asyncio.get_event_loop().run_in_executor(
+            None, _claude_summarize, cleaned_text
+        )
+
+    elif backend == "mock":
+        logger.info("[Pipeline] LLM Backend is 'mock' — skipping summary API")
         await asyncio.sleep(0.2)
-        return cleaned_text[:120] + "..." if len(cleaned_text) > 120 else cleaned_text
+        return "[MOCK SUMMARY]: This is a placeholder call summary."
 
-    return await asyncio.get_event_loop().run_in_executor(
-        None, _claude_summarize, cleaned_text
+    else:
+        return "Summary unavailable."
+
+def _openai_summarize(cleaned_text: str) -> str:
+    """Synchronous helper that hits OpenAI to generate a summary."""
+    from openai import OpenAI
+    client = OpenAI()
+    
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system", 
+                "content": "You are an expert AI assistant. Generate a concise executive summary of the following call transcript, highlighting key decisions and action items."
+            },
+            {
+                "role": "user", 
+                "content": cleaned_text
+            }
+        ],
+        temperature=0.5
     )
-
+    return response.choices[0].message.content
 
 def _claude_summarize(cleaned_text: str) -> str:
     import anthropic
