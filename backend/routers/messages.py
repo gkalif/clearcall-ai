@@ -8,15 +8,20 @@ import uuid
 import asyncio
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime
 
+from core.limiter import limiter
 from core.database import get_db
 from core.auth import get_current_user
 from models.all_models import Message, Transcript, AudioOutput, MessageStatus, User
 from services.ai_pipeline import process_message
+
+from cachetools import LRUCache
+# Initialize the cache at the module level (keeps up to 1000 completed messages)
+message_cache = LRUCache(maxsize=1000)
 
 router = APIRouter()
 
@@ -55,7 +60,9 @@ class MessageOut(BaseModel):
 # ── Routes ───────────────────────────────────
 
 @router.post("/upload", response_model=MessageOut)
+@limiter.limit("5/minute") 
 async def upload_audio(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     business_id: Optional[int] = Form(None),
@@ -64,13 +71,7 @@ async def upload_audio(
 ):
     """
     Upload audio file. Saves it locally, creates a Message record,
-    and kicks off background AI processing.
-
-    TODO: Replace local file save with S3 upload:
-        import boto3
-        s3 = boto3.client("s3", ...)
-        s3.upload_fileobj(file.file, BUCKET_NAME, s3_key)
-        file_path = f"s3://{BUCKET_NAME}/{s3_key}"
+    and kicks off background AI processing. Protected by an anti-DDOS rate limit.
     """
     # Validate file type
     allowed = {"audio/wav", "audio/mpeg", "audio/mp4", "audio/webm", "audio/ogg", "audio/x-m4a"}
@@ -98,7 +99,6 @@ async def upload_audio(
     db.refresh(msg)
 
     # Kick off background processing
-    # Uses a new DB session inside so the background task isn't tied to this request
     background_tasks.add_task(_run_pipeline, msg.id, file_path)
 
     return msg
@@ -134,13 +134,32 @@ def get_message(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get a single message. Only accessible by the owning user."""
+    """Get a single message. Only accessible by the owning user (with LRU Cache layer)."""
+    
+    # 1. Create a unique cache key for this specific user + message combination
+    cache_key = f"user_{current_user.id}_msg_{message_id}"
+    
+    # 2. Check if it's already in the cache
+    if cache_key in message_cache:
+        print(f"⚡ [Cache Hit] Returning message {message_id} directly from RAM!")
+        return message_cache[cache_key]
+        
+    print(f"🔍 [Cache Miss] Pulling message {message_id} from SQL database...")
+
+    # 3. Cache miss -> query the database
     msg = db.query(Message).filter(
         Message.id == message_id,
         Message.user_id == current_user.id
     ).first()
+    
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
+        
+    # 4. Only store in cache if the pipeline processing is completely finished
+    if msg.status == MessageStatus.complete or msg.status == "complete":
+        message_cache[cache_key] = msg
+        print(f"💾 [Cache Store] Saved completed message {message_id} to LRU cache")
+        
     return msg
 
 
@@ -161,6 +180,10 @@ async def reprocess_message(
 
     msg.status = MessageStatus.new
     db.commit()
+
+    # Evict cache item on manual reprocess to guarantee data freshness
+    cache_key = f"user_{current_user.id}_msg_{message_id}"
+    message_cache.pop(cache_key, None)
 
     background_tasks.add_task(_run_pipeline, msg.id, msg.original_audio_path)
     return {"detail": "Reprocessing started", "message_id": message_id}
