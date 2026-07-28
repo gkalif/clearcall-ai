@@ -1,213 +1,187 @@
-# ClearCall AI — MVP
+# ClearCall AI
 
-Accent clarity platform for businesses and their clients.
-Clients record voice messages → AI transcribes, cleans, summarizes, and re-speaks in a clear voice → businesses receive both the original and AI-clarified audio.
+**Accent clarity for voice messages.** A caller records a voice message; ClearCall transcribes it, cleans the transcript, summarizes it, and re-speaks it in a clear synthetic voice. The receiving business gets both the original audio and the clarified version, side by side.
+
+<!-- TODO: replace with a real link or delete the line -->
+[Live demo](#) · [2-min walkthrough video](#) · [API docs](http://localhost:8000/docs)
+
+<!-- TODO: drop a screenshot or GIF here. This is the single highest-value line in the file. -->
+![ClearCall business inbox showing original and clarified audio side by side](docs/screenshot-inbox.png)
 
 ---
 
-## Quick Start (5 minutes)
+## The problem
 
-### 1. Backend
+Businesses that take voice messages from a linguistically diverse customer base lose information at the point of intake. Accents, phone-line compression, and background noise mean messages get replayed repeatedly, misheard, or dropped entirely. The cost lands on the caller, who has to repeat themselves, and on the business, which loses the lead.
 
-```bash
-cd backend
+ClearCall sits between them: it preserves the original recording for fidelity and accountability, and produces a clarified transcript, summary, and re-spoken audio for speed.
 
-# Install dependencies
-pip install -r requirements.txt
+---
 
-# Copy env file (defaults work out of the box with SQLite)
-cp .env.example .env
+## How it works
 
-# Seed demo data
-python seed.py
+```
+  Caller audio                    Processing pipeline                  Business dashboard
+  ─────────────                   ───────────────────                  ──────────────────
 
-# Start the API
-uvicorn main:app --reload --port 8000
+  Browser mic  ──upload──▶  ┌──────────────────────────┐
+  or file                   │ 1. Speech-to-text        │  Whisper
+                            │                          │
+                            │ 2. Transcript cleaning   │  Claude        ──▶  Inbox
+                            │                          │                     Original audio
+                            │ 3. Summarization         │  Claude             Clarified audio
+                            │                          │                     Transcript
+                            │ 4. Text-to-speech        │  ElevenLabs         Summary
+                            └──────────────────────────┘                     Status tag
+                                        │
+                                   persisted:
+                                   audio + transcript + summary
 ```
 
-API is now running at http://localhost:8000
-Interactive docs: http://localhost:8000/docs
+Each stage is independently swappable — the STT provider, for instance, can be switched between Whisper and OpenAI's endpoint without touching the stages downstream.
 
-### 2. Frontend
+---
+
+## Engineering notes
+
+The interesting problems here weren't the API calls — they were everything around them.
+
+**Latency.** Four sequential network round-trips per message, two of them to generative models. <!-- TODO: fill in your real numbers. Something like: "Median end-to-end processing is Xs for a 30-second message; the TTS stage dominates at ~Ys." Do not guess — measure once and write the real figure. -->
+
+**Caching.** An LRU cache sits in front of the model calls so repeat processing of the same message doesn't re-incur cost or latency. <!-- TODO: note the cache size / eviction policy and roughly what hit rate you see. -->
+
+**Rate limiting.** Per-client limits protect the upstream API quotas from a single user uploading in a loop, and keep one tenant from degrading service for others.
+
+**Failure handling.** Upstream model APIs fail — timeouts, 429s, occasional 5xxs. The pipeline degrades in stages rather than all at once: if TTS fails, the transcript and summary still land in the inbox and the message is marked partially processed rather than lost. <!-- TODO: adjust this to describe what your code actually does. If you have a circuit breaker on the Claude call, name it here. -->
+
+**Cost.** <!-- TODO: approximate cost per processed message, if you've worked it out. Reviewers notice when a candidate has thought about unit economics. Delete this block if you haven't. -->
+
+---
+
+## Code review and collaboration
+
+ClearCall took an external contribution from a Principal Solutions Architect at Microsoft, adding LRU caching, rate limiting, and an alternate STT provider. I reviewed the PR, identified and patched a security issue before merge, and integrated it. <!-- TODO: link the PR — the diff and review thread are stronger evidence than this paragraph. -->
+
+---
+
+## Tech stack
+
+| Layer     | Tech                                        |
+|-----------|---------------------------------------------|
+| Backend   | Python 3.12, FastAPI, SQLAlchemy            |
+| Frontend  | React 18, TypeScript, Vite, Tailwind        |
+| Auth      | JWT (python-jose, passlib/bcrypt)           |
+| Database  | SQLite (dev) / PostgreSQL (prod)            |
+| Storage   | Local filesystem (dev) / S3 (prod)          |
+| AI        | Whisper (STT), Claude (cleaning + summary), ElevenLabs (TTS) |
+
+---
+
+## Running it locally
+
+Requires Python 3.12+ and Node 18+. You'll need API keys for the model providers — see `.env.example`.
 
 ```bash
-cd frontend
+# Backend
+cd backend
+pip install -r requirements.txt
+cp .env.example .env        # add your API keys
+python seed.py              # seed demo data
+uvicorn main:app --reload --port 8000
 
+# Frontend (separate terminal)
+cd frontend
 npm install
 npm run dev
 ```
 
-Frontend is now running at http://localhost:5173
+Backend on `:8000` (interactive docs at `/docs`), frontend on `:5173`.
+
+**Demo accounts** — seeded by `seed.py`:
+
+| Role     | Email                  | Password    |
+|----------|------------------------|-------------|
+| Client   | demo@clearcall.ai      | password123 |
+| Business | business@clearcall.ai  | password123 |
 
 ---
 
-## Demo Credentials
+## API
 
-| Role     | Email                      | Password    |
-|----------|----------------------------|-------------|
-| Client   | demo@clearcall.ai          | password123 |
-| Business | business@clearcall.ai      | password123 |
+<details>
+<summary>Endpoint reference</summary>
+
+**Auth**
+
+| Method | Endpoint               | Description     |
+|--------|------------------------|-----------------|
+| POST   | /auth/signup           | User signup     |
+| POST   | /auth/login            | User login      |
+| POST   | /auth/business/signup  | Business signup |
+| POST   | /auth/business/login   | Business login  |
+
+**Messages** — requires user JWT
+
+| Method | Endpoint                 | Description              |
+|--------|--------------------------|--------------------------|
+| POST   | /messages/upload         | Upload audio + process   |
+| GET    | /messages                | List user's messages     |
+| GET    | /messages/{id}           | Get message + transcript |
+| POST   | /messages/{id}/process   | Reprocess message        |
+
+**Business** — requires business JWT
+
+| Method | Endpoint                        | Description         |
+|--------|---------------------------------|---------------------|
+| GET    | /business/messages              | Business inbox      |
+| GET    | /business/messages/{id}         | Message detail      |
+| PATCH  | /business/messages/{id}/status  | Update status tag   |
+| GET    | /business/profile               | Business profile    |
+
+</details>
+
+<details>
+<summary>Project layout</summary>
+
+```
+backend/
+  main.py                   FastAPI entry point
+  seed.py                   Demo data seeder
+  core/
+    database.py             SQLAlchemy engine + session
+    auth.py                 JWT helpers + route dependencies
+  models/all_models.py
+  routers/
+    auth.py  messages.py  business.py
+  services/
+    ai_pipeline.py          STT → clean → summarize → TTS
+
+frontend/src/
+  App.tsx                   Routes + auth guards
+  lib/api.ts                Axios client
+  hooks/useAuth.tsx         Auth context
+  components/shared.tsx     Logo, AudioPlayer, StatusBadge, Spinner
+  pages/
+    Login.tsx  Signup.tsx
+    app/                    Client: Home, Record, Messages, Onboarding
+    business/Business.tsx   Dashboard, inbox, detail, settings
+```
+
+</details>
 
 ---
 
-## Project Structure
+## Deployment notes
 
-```
-clearcall/
-├── backend/
-│   ├── main.py                  # FastAPI app entry point
-│   ├── seed.py                  # Demo data seeder
-│   ├── requirements.txt
-│   ├── .env.example
-│   ├── core/
-│   │   ├── database.py          # SQLAlchemy engine + session
-│   │   └── auth.py              # JWT helpers + route dependencies
-│   ├── models/
-│   │   └── all_models.py        # All SQLAlchemy models
-│   ├── routers/
-│   │   ├── auth.py              # POST /auth/signup, /auth/login
-│   │   ├── messages.py          # POST /messages/upload, GET /messages
-│   │   └── business.py          # GET /business/messages
-│   └── services/
-│       └── ai_pipeline.py       # STT → clean → summarize → TTS pipeline
-│
-└── frontend/
-    └── src/
-        ├── App.tsx              # Routes + auth guards
-        ├── lib/api.ts           # Axios client + all API calls
-        ├── hooks/useAuth.tsx    # Auth context + hook
-        ├── components/shared.tsx # Logo, AudioPlayer, StatusBadge, Spinner
-        └── pages/
-            ├── Login.tsx
-            ├── Signup.tsx
-            ├── app/
-            │   ├── AppLayout.tsx    # Mobile app shell + bottom nav
-            │   ├── Home.tsx
-            │   ├── Record.tsx       # Mic recording + file upload
-            │   ├── Messages.tsx     # List + detail
-            │   └── Onboarding.tsx   # Accent profile setup
-            └── business/
-                └── Business.tsx    # Dashboard, inbox, message detail, settings
-```
+<details>
+<summary>PostgreSQL and S3</summary>
+
+**PostgreSQL** — set `DATABASE_URL=postgresql://user:password@host:5432/clearcall` in `.env`, install `psycopg2-binary`, and uncomment it in `requirements.txt`.
+
+**S3** — set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET`, and `AWS_REGION` in `.env`. The upload handler in `routers/messages.py` writes to S3 when these are present and falls back to local disk otherwise.
+
+</details>
 
 ---
 
-## API Endpoints
-
-### Auth
-| Method | Endpoint               | Description              |
-|--------|------------------------|--------------------------|
-| POST   | /auth/signup           | User signup              |
-| POST   | /auth/login            | User login               |
-| POST   | /auth/business/signup  | Business signup          |
-| POST   | /auth/business/login   | Business login           |
-
-### Messages (user JWT required)
-| Method | Endpoint                    | Description              |
-|--------|-----------------------------|--------------------------|
-| POST   | /messages/upload            | Upload audio + process   |
-| GET    | /messages                   | List user's messages     |
-| GET    | /messages/{id}              | Get message + transcript |
-| POST   | /messages/{id}/process      | Reprocess message        |
-
-### Business (business JWT required)
-| Method | Endpoint                          | Description              |
-|--------|-----------------------------------|--------------------------|
-| GET    | /business/messages                | Business inbox           |
-| GET    | /business/messages/{id}           | Message detail           |
-| PATCH  | /business/messages/{id}/status    | Update status tag        |
-| GET    | /business/profile                 | Business profile         |
-
----
-
-## AI Pipeline — Plugging in Real APIs
-
-All AI functions are in `backend/services/ai_pipeline.py`. Each function has a detailed TODO comment showing exactly which API to add.
-
-### Speech-to-Text
-Replace `speech_to_text()` with:
-- **OpenAI Whisper API** — `pip install openai`, set `OPENAI_API_KEY`
-- **Local Whisper** — `pip install openai-whisper` (free, no API key)
-
-### Transcript Cleaning + Summarization
-Replace `clean_transcript()` and `summarize_text()` with:
-- **OpenAI GPT-4o** — `pip install openai`, set `OPENAI_API_KEY`
-- **Claude API** — `pip install anthropic`, set `ANTHROPIC_API_KEY`
-
-### Text-to-Speech (clear AI voice)
-Replace `text_to_speech()` with:
-- **OpenAI TTS** — `client.audio.speech.create(model="tts-1-hd", voice="nova")`
-- **ElevenLabs** — `pip install elevenlabs`, set `ELEVENLABS_API_KEY`
-- **Azure TTS** — `pip install azure-cognitiveservices-speech`
-
----
-
-## Switching to PostgreSQL
-
-In `.env`:
-```
-DATABASE_URL=postgresql://user:password@localhost:5432/clearcall
-```
-
-Install driver:
-```bash
-pip install psycopg2-binary
-```
-
-Uncomment in `requirements.txt`:
-```
-psycopg2-binary==2.9.9
-```
-
----
-
-## Switching to S3 Storage
-
-In `routers/messages.py`, the upload endpoint has a TODO comment. Replace local file save with:
-```python
-import boto3
-s3 = boto3.client("s3")
-s3.upload_fileobj(file.file, os.getenv("AWS_S3_BUCKET"), s3_key)
-file_path = f"https://{bucket}.s3.amazonaws.com/{s3_key}"
-```
-
-Add to `.env`:
-```
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-AWS_S3_BUCKET=clearcall-audio
-AWS_REGION=us-east-1
-```
-
----
-
-## Frontend Routes
-
-| Path                    | Description                    | Auth        |
-|-------------------------|--------------------------------|-------------|
-| /login                  | Login (client or business)     | Public      |
-| /signup                 | Signup                         | Public      |
-| /app/home               | Client home                    | User JWT    |
-| /app/record             | Record/upload audio            | User JWT    |
-| /app/messages           | Message history                | User JWT    |
-| /app/messages/:id       | Message detail + playback      | User JWT    |
-| /app/onboarding         | Accent profile setup           | User JWT    |
-| /business/dashboard     | Business inbox                 | Biz JWT     |
-| /business/messages/:id  | Message detail + status update | Biz JWT     |
-| /business/settings      | Business settings              | Biz JWT     |
-
----
-
-## Tech Stack
-
-| Layer     | Tech                                    |
-|-----------|-----------------------------------------|
-| Backend   | Python 3.12, FastAPI, SQLAlchemy        |
-| Database  | SQLite (dev) / PostgreSQL (prod)        |
-| Auth      | JWT via python-jose + passlib/bcrypt    |
-| Storage   | Local filesystem (dev) / S3 (prod)      |
-| Frontend  | React 18, TypeScript, Vite              |
-| Styling   | Tailwind CSS v3                         |
-| HTTP      | Axios with auto-auth interceptor        |
-| Icons     | Lucide React                            |
-| Fonts     | DM Sans + Syne (Google Fonts)           |
+Built by [Gulet Kalif](https://www.linkedin.com/in/gkalif) · [github.com/gkalif](https://github.com/gkalif)
